@@ -2,15 +2,14 @@ import React, { useEffect, useState } from 'react'
 import { Link, NavLink, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { api } from './api'
 import { Icon, Logo } from './ui'
-import { Login, Dashboard, Disputes, Detail, Submit, Rules, Assistant, Reports, Settings, MosaicView } from './pages'
+import { Login, Dashboard, Disputes, Detail, Submit, Rules, Assistant, Reports, Settings } from './pages'
 
 const NAV: [string, string, string][] = [
   ['/', 'Dashboard', 'home'],
   ['/disputes', 'Disputes', 'shield'],
   ['/automation', 'Automation', 'bolt'],
   ['/reports', 'Reports', 'chart'],
-  ['/settings', 'Settings', 'sliders'],
-  ['/mosaic', 'All Screens View', 'sparkle']
+  ['/settings', 'Settings', 'sliders']
 ]
 
 function Layout({ onOut }: { onOut: () => void }) {
@@ -151,7 +150,6 @@ export default function App() {
         <Route path="assistant" element={<Assistant />} />
         <Route path="reports" element={<Reports />} />
         <Route path="settings" element={<Settings />} />
-        <Route path="mosaic" element={<MosaicView />} />
       </Route>
     </Routes>
   )
