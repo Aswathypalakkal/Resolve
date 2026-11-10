@@ -20,7 +20,7 @@ export function recommend(d: Dispute) {
   }
 
   // 1. Check active Auto-Accept rules
-  const autoAcceptRules = activeRules.filter(r => r.kind === 'auto-accept' || r.tag === 'Auto-Accept')
+  const autoAcceptRules = activeRules.filter(r => r.kind === 'auto-accept')
   for (const r of autoAcceptRules) {
     const threshMatch = r.title?.match(/(?:≤|<=|<|under|\$)\s*(\d+(?:\.\d+)?)/i)
     const threshold = threshMatch ? parseFloat(threshMatch[1]) : (r.value ?? store.rules.autoAcceptUnder ?? 15)
@@ -36,7 +36,7 @@ export function recommend(d: Dispute) {
   }
 
   // 2. Check active Auto-Refund / Settlement rules
-  const autoRefundRules = activeRules.filter(r => r.kind === 'auto-refund' || r.tag === 'Auto-Refund')
+  const autoRefundRules = activeRules.filter(r => r.kind === 'auto-refund')
   for (const r of autoRefundRules) {
     const isNoDeliveryMatch = r.title?.toLowerCase().includes('no delivery') || r.title?.toLowerCase().includes('not received')
     const matchesCondition = isNoDeliveryMatch
@@ -58,7 +58,7 @@ export function recommend(d: Dispute) {
   }
 
   // 3. Check active Auto-Fight rules
-  const autoFightRules = activeRules.filter(r => r.kind === 'auto-fight' || r.tag === 'Auto-Fight')
+  const autoFightRules = activeRules.filter(r => r.kind === 'auto-fight')
   for (const r of autoFightRules) {
     if (d.facts.delivered || s >= 70) {
       return {
@@ -107,7 +107,7 @@ export function policy(d: Dispute, rec: any) {
 
   // Check approval rules
   const activeRules = (store.rulesList || []).filter(r => r.on !== false)
-  const approvalRules = activeRules.filter(r => r.kind === 'approval' || r.tag === 'Require Approval')
+  const approvalRules = activeRules.filter(r => r.kind === 'approval')
   for (const ar of approvalRules) {
     const m = ar.title?.match(/(?:>|over|\$)\s*(\d+(?:\.\d+)?)/i)
     const thresh = m ? parseFloat(m[1]) : (ar.value ?? store.rules.requireApprovalOver ?? 100)
