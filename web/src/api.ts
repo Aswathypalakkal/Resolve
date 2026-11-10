@@ -228,6 +228,121 @@ const mockState = {
   ]
 }
 
+function applyRulesToDisputes(disputes: any[], rules: any[], active: boolean) {
+  if (!active) {
+    for (const d of disputes) {
+      if (d.status === 'OPEN') {
+        d.rec = { action: 'REVIEW', amount: 0, why: 'Automation rules disabled.' }
+        d.policy = { needsApproval: true, reason: 'Automation rules disabled.' }
+      }
+    }
+    return
+  }
+
+  const enabledRules = (rules || []).filter((r: any) => r.on !== false)
+
+  for (const d of disputes) {
+    if (d.status !== 'OPEN') continue
+
+    let matched = false
+
+    // 1. Auto-accept
+    const autoAcceptRules = enabledRules.filter((r: any) => r.kind === 'auto-accept' || r.tag === 'Auto-Accept')
+    for (const r of autoAcceptRules) {
+      const m = r.title?.match(/(?:≤|<=|<|under|\$)\s*(\d+(?:\.\d+)?)/i)
+      const thresh = m ? parseFloat(m[1]) : (r.value ?? 15)
+      if (d.amount <= thresh) {
+        d.rec = {
+          action: 'ACCEPT',
+          amount: d.amount,
+          why: `Matched rule: "${r.title}". Auto-accepted under merchant limit.`
+        }
+        d.policy = { needsApproval: false, reason: `Matched rule: "${r.title}"` }
+        matched = true
+        break
+      }
+    }
+
+    if (matched) continue
+
+    // 2. Auto-refund
+    const autoRefundRules = enabledRules.filter((r: any) => r.kind === 'auto-refund' || r.tag === 'Auto-Refund')
+    for (const r of autoRefundRules) {
+      const isNoDelivery = r.title?.toLowerCase().includes('no delivery') || r.title?.toLowerCase().includes('not received')
+      const cond = isNoDelivery
+        ? (d.type === 'ITEM_NOT_RECEIVED' || d.meta?.buyerClaim?.toLowerCase().includes('not received')) && !d.facts?.delivered
+        : (d.type === 'MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED' || d.type === 'QUALITY_ISSUE')
+
+      if (cond) {
+        const pctMatch = (r.desc || r.title)?.match(/(\d+)%/)
+        const pct = pctMatch ? parseFloat(pctMatch[1]) / 100 : 0.5
+        const offer = +(d.amount * pct).toFixed(2)
+        d.rec = {
+          action: 'OFFER',
+          amount: offer,
+          why: `Matched rule: "${r.title}". Offered ${Math.round(pct * 100)}% partial refund ($${offer}).`
+        }
+        d.policy = { needsApproval: false, reason: `Matched rule: "${r.title}"` }
+        matched = true
+        break
+      }
+    }
+
+    if (matched) continue
+
+    // 3. Auto-fight
+    const autoFightRules = enabledRules.filter((r: any) => r.kind === 'auto-fight' || r.tag === 'Auto-Fight')
+    for (const r of autoFightRules) {
+      if (d.facts?.delivered || (d.strength && d.strength >= 70)) {
+        d.rec = {
+          action: 'FIGHT',
+          amount: 0,
+          why: `Matched rule: "${r.title}". Carrier tracking confirms delivery.`
+        }
+        d.policy = { needsApproval: false, reason: `Auto-submitted under rule: "${r.title}"` }
+        matched = true
+        break
+      }
+    }
+
+    if (matched) continue
+
+    // 4. Default approval check
+    const approvalRules = enabledRules.filter((r: any) => r.kind === 'approval' || r.tag === 'Require Approval')
+    let overApproval = false
+    for (const ar of approvalRules) {
+      const m = ar.title?.match(/(?:>|over|\$)\s*(\d+(?:\.\d+)?)/i)
+      const thresh = m ? parseFloat(m[1]) : (ar.value ?? 100)
+      if (d.amount > thresh) {
+        overApproval = true
+        break
+      }
+    }
+
+    if (d.facts?.delivered || (d.strength && d.strength >= 70)) {
+      d.rec = {
+        action: 'FIGHT',
+        amount: 0,
+        why: 'Tracking confirms delivery to buyer address on Apr 24, 2025.'
+      }
+      d.policy = {
+        needsApproval: true,
+        reason: overApproval ? 'Dispute amount exceeds approval threshold.' : 'Evidence review required before submission.'
+      }
+    } else {
+      d.rec = {
+        action: 'REVIEW',
+        amount: 0,
+        why: 'Low confidence / package in transit. Manual verification recommended.'
+      }
+      d.policy = {
+        needsApproval: true,
+        reason: 'Requires human review.'
+      }
+    }
+  }
+}
+
 const j = async (u: string, o?: RequestInit) => {
   try {
     const r = await fetch('/api' + u, { headers: { 'content-type': 'application/json' }, ...o })
@@ -237,7 +352,19 @@ const j = async (u: string, o?: RequestInit) => {
   }
 
   // Local mock responses
-  if (u === '/state') return mockState
+  if (u === '/state') {
+    applyRulesToDisputes(mockState.disputes, mockState.rules, mockState.active)
+    const openCount = mockState.disputes.filter((d: any) => d.status === 'OPEN').length
+    const resolvedCount = mockState.disputes.filter((d: any) => d.status !== 'OPEN').length
+    const autoCount = mockState.disputes.filter((d: any) => d.handledBy === 'autopilot').length
+    mockState.stats = {
+      ...mockState.stats,
+      open: openCount,
+      handled: resolvedCount,
+      auto: autoCount
+    }
+    return mockState
+  }
   if (u.startsWith('/disputes/')) {
     const parts = u.split('/')
     const id = parts[2]
@@ -255,7 +382,8 @@ const j = async (u: string, o?: RequestInit) => {
       }
     }
     if (parts[3] === 'execute') {
-      d.status = 'SUBMITTED'
+      const b = o?.body ? JSON.parse(o.body as string) : {}
+      d.status = b.action === 'FIGHT' ? 'SUBMITTED' : b.action === 'OFFER' ? 'OFFERED' : 'ACCEPTED'
       d.handledBy = 'merchant (approved)'
       return d
     }
@@ -266,11 +394,43 @@ const j = async (u: string, o?: RequestInit) => {
       const b = JSON.parse(o.body as string)
       if (b.rules) mockState.rules = b.rules
       if (typeof b.active === 'boolean') mockState.active = b.active
+      applyRulesToDisputes(mockState.disputes, mockState.rules, mockState.active)
     }
     return { rules: mockState.rules, active: mockState.active }
   }
   if (u === '/autopilot') {
-    return { ok: true }
+    applyRulesToDisputes(mockState.disputes, mockState.rules, mockState.active)
+    let handledCount = 0
+    for (const d of mockState.disputes) {
+      if (d.status === 'OPEN' && !d.policy?.needsApproval) {
+        d.status = d.rec.action === 'FIGHT' ? 'SUBMITTED' : d.rec.action === 'OFFER' ? 'OFFERED' : 'ACCEPTED'
+        d.handledBy = 'autopilot'
+        handledCount++
+      }
+    }
+    const openCount = mockState.disputes.filter((d: any) => d.status === 'OPEN').length
+    const resolvedCount = mockState.disputes.filter((d: any) => d.status !== 'OPEN').length
+    const autoCount = mockState.disputes.filter((d: any) => d.handledBy === 'autopilot').length
+    mockState.stats = {
+      ...mockState.stats,
+      open: openCount,
+      handled: resolvedCount,
+      auto: autoCount
+    }
+    return { ok: true, handled: handledCount, disputes: mockState.disputes }
+  }
+  if (u === '/reset') {
+    mockState.disputes.forEach((d: any) => {
+      if (d.id !== 'PPD-00122') {
+        d.status = 'OPEN'
+        delete d.handledBy
+      }
+    })
+    applyRulesToDisputes(mockState.disputes, mockState.rules, mockState.active)
+    const openCount = mockState.disputes.filter((d: any) => d.status === 'OPEN').length
+    const resolvedCount = mockState.disputes.filter((d: any) => d.status !== 'OPEN').length
+    mockState.stats = { ...mockState.stats, open: openCount, handled: resolvedCount }
+    return { ok: true, disputes: mockState.disputes }
   }
   if (u === '/sync') {
     return { imported: 5 }
@@ -303,6 +463,7 @@ export const api = {
   run: (id: string, body: any) => j(`/disputes/${id}/execute`, { method: 'POST', body: JSON.stringify(body) }),
   rules: (r: any) => j('/rules', { method: 'PUT', body: JSON.stringify(r) }),
   auto: () => j('/autopilot', { method: 'POST' }),
+  reset: () => j('/reset', { method: 'POST' }),
   sync: () => j('/sync', { method: 'POST' }),
   ask: (text: string, disputeId?: string) => j('/ask', { method: 'POST', body: JSON.stringify({ text, disputeId }) })
 }

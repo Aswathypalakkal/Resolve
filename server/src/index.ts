@@ -25,20 +25,29 @@ const typeMap: Record<string, string> = {
 
 app.get('/api/state', (_q, res) => {
   const ds = store.disputes.map(view)
+  const openCount = ds.filter(d => d.status === 'OPEN').length
+  const handledCount = ds.filter(d => d.status !== 'OPEN').length
+  const autoCount = ds.filter(d => d.handledBy === 'autopilot').length
+
   res.json({
     mode: pp.live() ? 'PayPal Sandbox' : 'PayPal Sandbox',
     disputes: ds,
     rules: store.rulesList,
     active: store.rulesActive,
     spent: store.spent,
-    sample: store.sample,
+    sample: {
+      ...store.sample,
+      open: openCount,
+      resolved: handledCount,
+      trend: store.sample.trend
+    },
     log: store.log.slice(0, 8),
     stats: {
-      open: store.sample.open,
-      handled: store.sample.resolved,
+      open: openCount,
+      handled: handledCount,
       recovered: store.sample.recovered,
       avgDays: store.sample.avgDays,
-      auto: store.log.filter(l => l.by === 'autopilot').length
+      auto: autoCount
     }
   })
 })
@@ -65,27 +74,37 @@ app.post('/api/disputes/:id/execute', wrap(async (q: any, res: any) => {
 }))
 
 app.post('/api/autopilot', wrap(async (_q: any, res: any) => {
+  let count = 0
   for (const d of store.disputes.filter(x => x.status === 'OPEN')) {
     const rec: any = recommend(d)
-    if (!policy(d, rec).needsApproval) {
-      await execute(d, rec.action, rec.amount || 0, 'Handled automatically under merchant rules.', 'autopilot')
+    const pol = policy(d, rec)
+    if (!pol.needsApproval) {
+      const logNote = rec.ruleTitle ? `Handled under: ${rec.ruleTitle}` : 'Handled automatically under merchant rules.'
+      await execute(d, rec.action, rec.amount || 0, logNote, 'autopilot')
+      count++
     }
   }
-  res.json({ ok: true })
+  res.json({ ok: true, handled: count, disputes: store.disputes.map(view) })
 }))
 
 app.put('/api/rules', wrap((q: any, res: any) => {
   if (q.body.rules) {
     store.rulesList = q.body.rules
-    const autoAccept = q.body.rules.find((r: any) => r.kind === 'auto-accept')
-    const requireApproval = q.body.rules.find((r: any) => r.kind === 'approval')
-    if (autoAccept) store.rules.autoAcceptUnder = autoAccept.value
-    if (requireApproval) store.rules.requireApprovalOver = requireApproval.value
+    const autoAccept = q.body.rules.find((r: any) => r.on && (r.kind === 'auto-accept' || r.tag === 'Auto-Accept'))
+    const requireApproval = q.body.rules.find((r: any) => r.on && (r.kind === 'approval' || r.tag === 'Require Approval'))
+    if (autoAccept) {
+      const m = autoAccept.title?.match(/(?:≤|<=|<|under|\$)\s*(\d+(?:\.\d+)?)/i)
+      store.rules.autoAcceptUnder = m ? parseFloat(m[1]) : (autoAccept.value ?? 15)
+    }
+    if (requireApproval) {
+      const m = requireApproval.title?.match(/(?:>|over|\$)\s*(\d+(?:\.\d+)?)/i)
+      store.rules.requireApprovalOver = m ? parseFloat(m[1]) : (requireApproval.value ?? 100)
+    }
   }
   if (typeof q.body.active === 'boolean') {
     store.rulesActive = q.body.active
   }
-  res.json({ rules: store.rulesList, active: store.rulesActive })
+  res.json({ rules: store.rulesList, active: store.rulesActive, disputes: store.disputes.map(view) })
 }))
 
 app.post('/api/ask', wrap(async (req: any, res: any) => {
@@ -114,6 +133,16 @@ app.post('/api/ask', wrap(async (req: any, res: any) => {
   return res.json({
     answer: `Resolve AI: I analyzed your PayPal dispute query regarding "${text}". Based on PayPal merchant policy and tracking records, our recommendation is to fight this claim with verified delivery proof.`
   })
+}))
+
+app.post('/api/reset', wrap((_q: any, res: any) => {
+  store.disputes.forEach(d => {
+    if (d.id !== 'PPD-00122') {
+      d.status = 'OPEN'
+      delete d.handledBy
+    }
+  })
+  res.json({ ok: true, disputes: store.disputes.map(view) })
 }))
 
 app.post('/api/sync', wrap(async (_q: any, res: any) => {

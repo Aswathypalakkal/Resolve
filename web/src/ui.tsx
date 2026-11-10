@@ -86,12 +86,13 @@ export function statusOf(d: any): [string, string] {
   if (d.status === 'SUBMITTED') return ['Evidence Submitted', 'bg-indigo-100 text-indigo-700']
   if (d.status === 'OFFERED') return ['Offer Sent', 'bg-violet-100 text-violet-700']
   if (d.status === 'ACCEPTED') return [d.handledBy === 'autopilot' ? 'Auto-Accepted' : 'Accepted', 'bg-[#e6f8ef] text-[#059669]']
-  if (d.id === 'PPD-00124') return ['Needs Review', 'bg-[#fef3c7] text-[#d97706]']
-  if (d.id === 'PPD-00123') return ['AI Recommendation', 'bg-[#e0e7ff] text-[#4f46e5]']
-  if (d.id === 'PPD-00122') return ['Auto-Accepted', 'bg-[#e6f8ef] text-[#059669]']
-  if (d.id === 'PPD-00121' || d.id === 'PPD-00120') return ['Open', 'bg-[#ffe4e6] text-[#e11d48]']
-  if (!d.policy?.needsApproval) return ['Open', 'bg-[#ffe4e6] text-[#e11d48]']
-  return d.rec?.action === 'REVIEW' ? ['Needs Review', 'bg-[#fef3c7] text-[#d97706]'] : ['AI Recommendation', 'bg-[#e0e7ff] text-[#4f46e5]']
+  if (d.status === 'OPEN') {
+    if (!d.policy?.needsApproval && d.rec?.action === 'ACCEPT') return ['Auto-Accept Ready', 'bg-[#e6f8ef] text-[#059669]']
+    if (!d.policy?.needsApproval && d.rec?.action === 'OFFER') return ['Auto-Refund Ready', 'bg-blue-100 text-blue-700']
+    if (d.policy?.needsApproval) return ['Needs Review', 'bg-[#fef3c7] text-[#d97706]']
+    return ['AI Recommendation', 'bg-[#e0e7ff] text-[#4f46e5]']
+  }
+  return ['Open', 'bg-[#ffe4e6] text-[#e11d48]']
 }
 
 export const Chip = ({ cls, children }: { cls: string; children: React.ReactNode }) => (

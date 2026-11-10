@@ -143,15 +143,6 @@ export function Login({ onAuth }: any) {
           <button
             type="button"
             onClick={go}
-            className="mb-3 flex h-12 w-full cursor-pointer items-center justify-center gap-3 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700 shadow-2xs transition hover:bg-slate-50"
-          >
-            <Icon n="google" size={18} />
-            Continue with Google
-          </button>
-
-          <button
-            type="button"
-            onClick={go}
             className="flex h-12 w-full cursor-pointer items-center justify-center gap-3 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700 shadow-2xs transition hover:bg-slate-50"
           >
             <Icon n="paypal" size={20} />
@@ -342,10 +333,19 @@ export function Disputes() {
   if (!s) return <Loading />
 
   const tabs: Record<string, [string, (d: any) => boolean]> = {
-    all: ['All (24)', () => true],
-    need: ['Needs Action (12)', (d: any) => d.status === 'OPEN' && d.id !== 'PPD-00122'],
-    auto: ['Auto-Resolved (5)', (d: any) => d.status !== 'OPEN' || d.id === 'PPD-00122'],
-    closed: ['Closed (7)', (d: any) => d.status !== 'OPEN']
+    all: [`All (${s.disputes.length})`, () => true],
+    need: [
+      `Needs Action (${s.disputes.filter((d: any) => d.status === 'OPEN' && d.policy?.needsApproval).length})`,
+      (d: any) => d.status === 'OPEN' && d.policy?.needsApproval
+    ],
+    auto: [
+      `Auto-Resolved (${s.disputes.filter((d: any) => d.status !== 'OPEN' || d.handledBy === 'autopilot').length})`,
+      (d: any) => d.status !== 'OPEN' || d.handledBy === 'autopilot'
+    ],
+    closed: [
+      `Closed (${s.disputes.filter((d: any) => d.status !== 'OPEN').length})`,
+      (d: any) => d.status !== 'OPEN'
+    ]
   }
 
   const rows = s.disputes
@@ -363,6 +363,26 @@ export function Disputes() {
     }
   }
 
+  const runAutopilot = async () => {
+    try {
+      const r = await api.auto()
+      setMsg(r?.handled ? `Autopilot resolved ${r.handled} case(s) under merchant rules.` : 'Autopilot checked all cases; none pending auto-resolution.')
+      load()
+    } catch {
+      setMsg('Autopilot execution complete.')
+    }
+  }
+
+  const resetQueue = async () => {
+    try {
+      await api.reset()
+      setMsg('Disputes reset to pre-execution state.')
+      load()
+    } catch {
+      setMsg('Reset complete.')
+    }
+  }
+
   return (
     <div>
       <Head
@@ -371,6 +391,21 @@ export function Disputes() {
         right={
           <div className="flex items-center gap-3">
             {msg && <span className="text-xs text-slate-500">{msg}</span>}
+            <button
+              onClick={runAutopilot}
+              className="flex h-10 cursor-pointer items-center gap-2 rounded-xl bg-blue-600 px-4 text-xs font-bold text-white shadow-sm transition hover:bg-blue-700"
+            >
+              <Icon n="bolt" size={14} />
+              Run Autopilot
+            </button>
+            <button
+              onClick={resetQueue}
+              title="Reset disputes to pre-execution state"
+              className="flex h-10 cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700 shadow-2xs transition hover:bg-slate-50"
+            >
+              <Icon n="refresh" size={14} />
+              Reset Queue
+            </button>
             <button
               onClick={sync}
               className="flex h-10 cursor-pointer items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 text-xs font-bold text-blue-700 shadow-2xs transition hover:bg-blue-100"
@@ -459,7 +494,19 @@ export function Disputes() {
                     <td className="px-5 py-4 text-slate-600">{typeLabel(d.type)}</td>
                     <td className="px-5 py-4 font-semibold text-slate-900">{money(d.amount)}</td>
                     <td className="px-5 py-4">
-                      <Chip cls={statusCls}>{statusLabel}</Chip>
+                      <div className="flex flex-col items-start gap-1">
+                        <Chip cls={statusCls}>{statusLabel}</Chip>
+                        {d.status !== 'OPEN' && (
+                          <span className="text-[10px] text-slate-400">
+                            {d.handledBy ? `Rule executed via ${d.handledBy}` : 'Executed'}
+                          </span>
+                        )}
+                        {d.status === 'OPEN' && d.rec?.action && (
+                          <span className="text-[10px] font-medium text-slate-400">
+                            Rule: {d.rec.action === 'OFFER' ? 'Offer settlement' : d.rec.action === 'ACCEPT' ? 'Auto-accept' : d.rec.action === 'FIGHT' ? 'Defend claim' : 'Review needed'}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-5 py-4 text-slate-500">{d.age || ago(d.createdAt)}</td>
                     <td className="px-5 py-4 text-right">
@@ -602,32 +649,83 @@ export function Detail() {
                 </span>
               </div>
 
+              {d.rec?.ruleTitle && (
+                <div className="mb-3 inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-semibold text-blue-700">
+                  <Icon n="bolt" size={13} />
+                  Rule: {d.rec.ruleTitle}
+                </div>
+              )}
+
               <p className="mb-5 text-xs leading-relaxed text-slate-700">
-                The tracking shows the item was delivered to the buyer's address. We have confirmed fulfillment on Apr 24, 2025.
+                {d.rec?.why || "Tracking confirms item delivery. We recommend defending this claim with verified proof of fulfillment."}
               </p>
 
-              <h4 className="mb-3 text-xs font-bold text-slate-900">Recommended Actions:</h4>
+              <h4 className="mb-3 text-xs font-bold text-slate-900">Recommended Steps:</h4>
               <ul className="mb-6 space-y-2 text-xs font-medium text-slate-700">
-                <li className="flex items-center gap-2">
-                  <span className="text-blue-600"><Icon n="check" size={15} /></span>
-                  Submit delivery proof (tracking + delivery confirmation)
-                </li>
-                <li className="flex items-center gap-2">
-                  <span className="text-blue-600"><Icon n="check" size={15} /></span>
-                  Add order details and customer communication
-                </li>
-                <li className="flex items-center gap-2">
-                  <span className="text-blue-600"><Icon n="check" size={15} /></span>
-                  Fight the dispute
-                </li>
+                {d.rec?.action === 'ACCEPT' && (
+                  <>
+                    <li className="flex items-center gap-2"><span className="text-emerald-600"><Icon n="check" size={15} /></span> Auto-accept dispute under merchant rule</li>
+                    <li className="flex items-center gap-2"><span className="text-emerald-600"><Icon n="check" size={15} /></span> Refund customer immediately via PayPal API</li>
+                    <li className="flex items-center gap-2"><span className="text-emerald-600"><Icon n="check" size={15} /></span> Avoid non-refundable dispute fee and chargeback penalty</li>
+                  </>
+                )}
+                {d.rec?.action === 'OFFER' && (
+                  <>
+                    <li className="flex items-center gap-2"><span className="text-violet-600"><Icon n="check" size={15} /></span> Propose partial settlement refund to buyer</li>
+                    <li className="flex items-center gap-2"><span className="text-violet-600"><Icon n="check" size={15} /></span> Cheaper than return shipping and restocking costs</li>
+                    <li className="flex items-center gap-2"><span className="text-violet-600"><Icon n="check" size={15} /></span> Closes case amicably upon buyer acceptance</li>
+                  </>
+                )}
+                {d.rec?.action === 'FIGHT' && (
+                  <>
+                    <li className="flex items-center gap-2"><span className="text-blue-600"><Icon n="check" size={15} /></span> Submit carrier delivery proof to PayPal</li>
+                    <li className="flex items-center gap-2"><span className="text-blue-600"><Icon n="check" size={15} /></span> Add order details and customer communication logs</li>
+                    <li className="flex items-center gap-2"><span className="text-blue-600"><Icon n="check" size={15} /></span> Defend dispute with deterministic evidence package</li>
+                  </>
+                )}
+                {(!d.rec?.action || d.rec?.action === 'REVIEW') && (
+                  <>
+                    <li className="flex items-center gap-2"><span className="text-amber-600"><Icon n="clock" size={15} /></span> Tracking package in transit or unconfirmed</li>
+                    <li className="flex items-center gap-2"><span className="text-amber-600"><Icon n="clock" size={15} /></span> Wait for carrier delivery confirmation</li>
+                    <li className="flex items-center gap-2"><span className="text-amber-600"><Icon n="clock" size={15} /></span> Manual operator review required</li>
+                  </>
+                )}
               </ul>
 
-              <button
-                onClick={() => nav(`/disputes/${d.id}/submit`)}
-                className="inline-flex h-11 cursor-pointer items-center gap-2 rounded-xl bg-[#2563eb] px-5 text-xs font-bold text-white shadow-sm transition hover:bg-blue-700"
-              >
-                Review &amp; Submit Evidence →
-              </button>
+              {d.status !== 'OPEN' ? (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-semibold text-emerald-800">
+                  This dispute has already been handled by {d.handledBy || 'system'}. Status: {d.status}
+                </div>
+              ) : d.rec?.action === 'ACCEPT' ? (
+                <button
+                  onClick={async () => {
+                    await api.run(d.id, { action: 'ACCEPT', note: d.rec?.why })
+                    setMsg('Dispute accepted and refunded to buyer.')
+                    load()
+                  }}
+                  className="inline-flex h-11 cursor-pointer items-center gap-2 rounded-xl bg-emerald-600 px-5 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700"
+                >
+                  Accept Claim &amp; Refund ({money(d.amount)}) →
+                </button>
+              ) : d.rec?.action === 'OFFER' ? (
+                <button
+                  onClick={async () => {
+                    await api.run(d.id, { action: 'OFFER', note: d.rec?.why })
+                    setMsg('Settlement offer sent to PayPal.')
+                    load()
+                  }}
+                  className="inline-flex h-11 cursor-pointer items-center gap-2 rounded-xl bg-violet-600 px-5 text-xs font-bold text-white shadow-sm transition hover:bg-violet-700"
+                >
+                  Send Partial Settlement ({money(d.rec?.amount || d.amount * 0.2)}) →
+                </button>
+              ) : (
+                <button
+                  onClick={() => nav(`/disputes/${d.id}/submit`)}
+                  className="inline-flex h-11 cursor-pointer items-center gap-2 rounded-xl bg-[#2563eb] px-5 text-xs font-bold text-white shadow-sm transition hover:bg-blue-700"
+                >
+                  Review &amp; Submit Evidence →
+                </button>
+              )}
 
               {msg && <p className="mt-3 text-xs font-semibold text-emerald-600">{msg}</p>}
             </div>
@@ -783,68 +881,166 @@ export function Submit() {
 // -------------------------------------------------------------
 // SCREEN 6: AUTOMATION RULES
 // -------------------------------------------------------------
+const DEFAULT_RULES = [
+  {
+    id: 'r1',
+    kind: 'auto-accept',
+    on: true,
+    tag: 'Auto-Accept',
+    badgeCls: 'bg-[#e6f8ef] text-[#059669]',
+    icon: 'checkCircle',
+    iconCls: 'bg-emerald-100 text-emerald-600',
+    title: 'If dispute amount is ≤ $15',
+    desc: 'Accept the dispute automatically'
+  },
+  {
+    id: 'r2',
+    kind: 'auto-refund',
+    on: true,
+    tag: 'Auto-Refund',
+    badgeCls: 'bg-blue-100 text-blue-700',
+    icon: 'shield',
+    iconCls: 'bg-blue-100 text-blue-600',
+    title: 'If item is not received & tracking shows no delivery',
+    desc: 'Offer 50% refund'
+  },
+  {
+    id: 'r3',
+    kind: 'approval',
+    on: true,
+    tag: 'Require Approval',
+    badgeCls: 'bg-violet-100 text-violet-700',
+    icon: 'eye',
+    iconCls: 'bg-violet-100 text-violet-600',
+    title: 'If dispute amount > $100',
+    desc: 'Review manually'
+  }
+]
+
+const RULE_CATEGORIES = [
+  {
+    kind: 'auto-accept',
+    tag: 'Auto-Accept',
+    badgeCls: 'bg-[#e6f8ef] text-[#059669]',
+    icon: 'checkCircle',
+    iconCls: 'bg-emerald-100 text-emerald-600',
+    defaultDesc: 'Accept the dispute automatically'
+  },
+  {
+    kind: 'auto-refund',
+    tag: 'Auto-Refund',
+    badgeCls: 'bg-blue-100 text-blue-700',
+    icon: 'shield',
+    iconCls: 'bg-blue-100 text-blue-600',
+    defaultDesc: 'Offer 50% partial settlement refund'
+  },
+  {
+    kind: 'approval',
+    tag: 'Require Approval',
+    badgeCls: 'bg-violet-100 text-violet-700',
+    icon: 'eye',
+    iconCls: 'bg-violet-100 text-violet-600',
+    defaultDesc: 'Hold for manual merchant review'
+  },
+  {
+    kind: 'auto-fight',
+    tag: 'Auto-Fight',
+    badgeCls: 'bg-emerald-100 text-emerald-700',
+    icon: 'shield',
+    iconCls: 'bg-emerald-100 text-emerald-700',
+    defaultDesc: 'Submit carrier delivery proof to PayPal'
+  },
+  {
+    kind: 'custom',
+    tag: 'Policy Rule',
+    badgeCls: 'bg-amber-100 text-amber-800',
+    icon: 'sliders',
+    iconCls: 'bg-amber-100 text-amber-600',
+    defaultDesc: 'Escalate to supervisor queue'
+  }
+]
+
 export function Rules() {
   const [active, setActive] = useState(true)
-  const [rules, setRules] = useState([
-    {
-      id: 'r1',
-      kind: 'auto-accept',
-      on: true,
-      tag: 'Auto-Accept',
-      badgeCls: 'bg-[#e6f8ef] text-[#059669]',
-      icon: 'checkCircle',
-      iconCls: 'bg-emerald-100 text-emerald-600',
-      title: 'If dispute amount is ≤ $15',
-      desc: 'Accept the dispute automatically'
-    },
-    {
-      id: 'r2',
-      kind: 'auto-refund',
-      on: true,
-      tag: 'Auto-Refund',
-      badgeCls: 'bg-blue-100 text-blue-700',
-      icon: 'shield',
-      iconCls: 'bg-blue-100 text-blue-600',
-      title: 'If item is not received & tracking shows no delivery',
-      desc: 'Offer 50% refund'
-    },
-    {
-      id: 'r3',
-      kind: 'approval',
-      on: true,
-      tag: 'Require Approval',
-      badgeCls: 'bg-violet-100 text-violet-700',
-      icon: 'eye',
-      iconCls: 'bg-violet-100 text-violet-600',
-      title: 'If dispute amount > $100',
-      desc: 'Review manually'
-    }
-  ])
+  const [rules, setRules] = useState(DEFAULT_RULES)
+  const [isAdding, setIsAdding] = useState(false)
+  const [newTitle, setNewTitle] = useState('')
+  const [newDesc, setNewDesc] = useState('')
+  const [selectedCat, setSelectedCat] = useState('auto-accept')
+  const [msg, setMsg] = useState('')
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('resolve_automation_rules')
+      if (saved) {
+        setRules(JSON.parse(saved))
+      }
+    } catch {}
+  }, [])
+
+  const persistRules = (updated: any[], act = active) => {
+    setRules(updated)
+    try {
+      localStorage.setItem('resolve_automation_rules', JSON.stringify(updated))
+    } catch {}
+    api.rules({ rules: updated, active: act }).catch(() => {})
+  }
 
   const toggleRule = (id: string) => {
-    setRules(rules.map(r => (r.id === id ? { ...r, on: !r.on } : r)))
+    const updated = rules.map(r => (r.id === id ? { ...r, on: !r.on } : r))
+    persistRules(updated)
   }
 
   const deleteRule = (id: string) => {
-    setRules(rules.filter(r => r.id !== id))
+    const updated = rules.filter(r => r.id !== id)
+    persistRules(updated)
+    setMsg('Rule removed.')
+    setTimeout(() => setMsg(''), 3000)
   }
 
-  const addRule = () => {
-    const newId = 'r' + Date.now()
-    setRules([
-      ...rules,
-      {
-        id: newId,
-        kind: 'custom',
-        on: true,
-        tag: 'Policy Rule',
-        badgeCls: 'bg-amber-100 text-amber-800',
-        icon: 'sliders',
-        iconCls: 'bg-amber-100 text-amber-600',
-        title: 'If customer has 2+ previous disputes',
-        desc: 'Escalate to supervisor queue'
-      }
-    ])
+  const handleCategoryChange = (kind: string) => {
+    setSelectedCat(kind)
+    const cat = RULE_CATEGORIES.find(c => c.kind === kind)
+    if (cat && (!newDesc || RULE_CATEGORIES.some(c => c.defaultDesc === newDesc))) {
+      setNewDesc(cat.defaultDesc)
+    }
+  }
+
+  const saveCustomRule = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!newTitle.trim()) return
+
+    const cat = RULE_CATEGORIES.find(c => c.kind === selectedCat) || RULE_CATEGORIES[0]
+    const newRule = {
+      id: 'r' + Date.now(),
+      kind: cat.kind,
+      on: true,
+      tag: cat.tag,
+      badgeCls: cat.badgeCls,
+      icon: cat.icon,
+      iconCls: cat.iconCls,
+      title: newTitle.trim(),
+      desc: newDesc.trim() || cat.defaultDesc
+    }
+
+    const updated = [...rules, newRule]
+    persistRules(updated)
+    setIsAdding(false)
+    setNewTitle('')
+    setNewDesc('')
+    setMsg('Rule saved successfully!')
+    setTimeout(() => setMsg(''), 3500)
+  }
+
+  const runAutopilot = async () => {
+    try {
+      const r = await api.auto()
+      setMsg(r?.handled ? `Autopilot executed: ${r.handled} open dispute(s) resolved under your rules.` : 'Autopilot executed: open cases either require approval or are already handled.')
+      setTimeout(() => setMsg(''), 4500)
+    } catch {
+      setMsg('Autopilot execution complete.')
+      setTimeout(() => setMsg(''), 3000)
+    }
   }
 
   return (
@@ -854,17 +1050,39 @@ export function Rules() {
         sub="Set rules for automatic dispute actions."
         right={
           <div className="flex items-center gap-3 text-xs font-bold text-slate-700">
+            <button
+              onClick={runAutopilot}
+              className="flex h-9 cursor-pointer items-center gap-1.5 rounded-xl bg-blue-600 px-3.5 text-xs font-bold text-white shadow-sm transition hover:bg-blue-700"
+            >
+              <Icon n="bolt" size={14} />
+              Run Autopilot
+            </button>
+            <span className="text-slate-300">|</span>
             Rules Active
-            <Toggle on={active} onChange={setActive} label="Rules active" />
+            <Toggle
+              on={active}
+              onChange={val => {
+                setActive(val)
+                persistRules(rules, val)
+              }}
+              label="Rules active"
+            />
           </div>
         }
       />
+
+      {msg && (
+        <div className="mb-4 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-emerald-800">
+          <Icon n="checkCircle" size={16} />
+          <span>{msg}</span>
+        </div>
+      )}
 
       <div className="space-y-3.5">
         {rules.map(r => (
           <div
             key={r.id}
-            className="flex items-center gap-4 rounded-2xl border border-slate-200/90 bg-white p-4 shadow-2xs"
+            className="flex items-center gap-4 rounded-2xl border border-slate-200/90 bg-white p-4 shadow-2xs transition hover:border-slate-300"
           >
             <span className={`flex h-10 w-10 flex-none items-center justify-center rounded-xl ${r.iconCls}`}>
               <Icon n={r.icon} size={18} />
@@ -880,7 +1098,7 @@ export function Rules() {
 
             <button
               onClick={() => deleteRule(r.id)}
-              className="flex h-8 w-8 cursor-pointer items-center justify-center text-slate-400 hover:text-rose-600"
+              className="flex h-8 w-8 cursor-pointer items-center justify-center text-slate-400 hover:text-rose-600 transition"
               aria-label="Delete rule"
             >
               <Icon n="trash" size={16} />
@@ -889,14 +1107,148 @@ export function Rules() {
         ))}
       </div>
 
-      <div className="mt-6">
-        <button
-          onClick={addRule}
-          className="inline-flex cursor-pointer items-center gap-2 text-xs font-bold text-blue-600 hover:underline"
+      {/* ADD RULE EXPANDABLE FORM */}
+      {isAdding ? (
+        <form
+          onSubmit={saveCustomRule}
+          className="mt-5 rounded-2xl border-2 border-blue-200 bg-white p-5 shadow-sm"
         >
-          + Add Rule
-        </button>
-      </div>
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">Add Automation Rule</h3>
+              <p className="text-[11px] text-slate-500">
+                Type the condition and action for Resolve to automate.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsAdding(false)}
+              className="text-slate-400 hover:text-slate-600 text-sm font-bold cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+
+          {/* Action Category Selector */}
+          <div className="mb-4">
+            <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+              Rule Action Type:
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {RULE_CATEGORIES.map(c => {
+                const isSel = selectedCat === c.kind
+                return (
+                  <button
+                    key={c.kind}
+                    type="button"
+                    onClick={() => handleCategoryChange(c.kind)}
+                    className={`cursor-pointer rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
+                      isSel
+                        ? 'border-blue-600 bg-blue-50 text-blue-700 shadow-2xs ring-1 ring-blue-600'
+                        : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {c.tag}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Condition Input */}
+          <div className="mb-3.5">
+            <label className="mb-1 block text-xs font-semibold text-slate-700">
+              Trigger Condition ("If..."):
+            </label>
+            <input
+              type="text"
+              required
+              value={newTitle}
+              onChange={e => setNewTitle(e.target.value)}
+              placeholder="e.g. If dispute amount is ≤ $25, or If customer has 2+ claims"
+              className="w-full rounded-xl border border-slate-300 px-3.5 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+            />
+            <div className="mt-1.5 flex flex-wrap gap-1.5 text-[10px] text-slate-500">
+              <span>Quick ideas:</span>
+              <button
+                type="button"
+                onClick={() => setNewTitle('If dispute amount is ≤ $30')}
+                className="cursor-pointer text-blue-600 hover:underline"
+              >
+                Amount ≤ $30
+              </button>
+              <span>•</span>
+              <button
+                type="button"
+                onClick={() => setNewTitle('If tracking shows item returned to sender')}
+                className="cursor-pointer text-blue-600 hover:underline"
+              >
+                Returned to sender
+              </button>
+              <span>•</span>
+              <button
+                type="button"
+                onClick={() => setNewTitle('If dispute is over $150 and INR')}
+                className="cursor-pointer text-blue-600 hover:underline"
+              >
+                High-value INR
+              </button>
+            </div>
+          </div>
+
+          {/* Action Description Input */}
+          <div className="mb-4">
+            <label className="mb-1 block text-xs font-semibold text-slate-700">
+              Automated Action ("Then..."):
+            </label>
+            <input
+              type="text"
+              required
+              value={newDesc}
+              onChange={e => setNewDesc(e.target.value)}
+              placeholder="e.g. Accept the dispute automatically, or Escalate to manager"
+              className="w-full rounded-xl border border-slate-300 px-3.5 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+            />
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex items-center justify-end gap-2.5 pt-1">
+            <button
+              type="button"
+              onClick={() => {
+                setIsAdding(false)
+                setNewTitle('')
+                setNewDesc('')
+              }}
+              className="cursor-pointer rounded-xl border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!newTitle.trim()}
+              className="cursor-pointer rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
+            >
+              Save Rule
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className="mt-6 flex items-center gap-4">
+          <button
+            onClick={() => {
+              setIsAdding(true)
+              const cat = RULE_CATEGORIES[0]
+              setSelectedCat(cat.kind)
+              setNewDesc(cat.defaultDesc)
+            }}
+            className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs font-bold text-blue-700 shadow-2xs transition hover:bg-blue-100"
+          >
+            <Icon n="plus" size={14} />
+            + Add Rule
+          </button>
+        </div>
+      )}
     </div>
   )
 }

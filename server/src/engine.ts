@@ -12,31 +12,127 @@ export const evidence = (d: Dispute) =>
 export const strength = (d: Dispute) => Math.min(100, evidence(d).reduce((s, e) => s + (W[e.fact] || 0), 0))
 
 export function recommend(d: Dispute) {
-  const s = strength(d), r = store.rules
-  if (d.amount <= r.autoAcceptUnder) {
-    return { action: 'ACCEPT', amount: d.amount, why: `The amount is within your $${r.autoAcceptUnder} auto-accept limit, so fighting costs more than it saves.` }
+  const s = strength(d)
+  const activeRules = (store.rulesList || []).filter(r => r.on !== false)
+
+  if (store.rulesActive === false) {
+    return { action: 'REVIEW', amount: 0, why: 'Automation rules are disabled. Case is held for manual review.' }
   }
+
+  // 1. Check active Auto-Accept rules
+  const autoAcceptRules = activeRules.filter(r => r.kind === 'auto-accept' || r.tag === 'Auto-Accept')
+  for (const r of autoAcceptRules) {
+    const threshMatch = r.title?.match(/(?:≤|<=|<|under|\$)\s*(\d+(?:\.\d+)?)/i)
+    const threshold = threshMatch ? parseFloat(threshMatch[1]) : (r.value ?? store.rules.autoAcceptUnder ?? 15)
+    if (d.amount <= threshold) {
+      return {
+        action: 'ACCEPT',
+        amount: d.amount,
+        ruleId: r.id,
+        ruleTitle: r.title,
+        why: `Matched rule "${r.title}": Claim amount ($${d.amount}) is within $${threshold} limit.`
+      }
+    }
+  }
+
+  // 2. Check active Auto-Refund / Settlement rules
+  const autoRefundRules = activeRules.filter(r => r.kind === 'auto-refund' || r.tag === 'Auto-Refund')
+  for (const r of autoRefundRules) {
+    const isNoDeliveryMatch = r.title?.toLowerCase().includes('no delivery') || r.title?.toLowerCase().includes('not received')
+    const matchesCondition = isNoDeliveryMatch
+      ? (d.type === 'ITEM_NOT_RECEIVED' || d.meta?.buyerClaim?.toLowerCase().includes('not received')) && !d.facts.delivered
+      : (d.type === 'MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED' || d.type === 'QUALITY_ISSUE')
+
+    if (matchesCondition) {
+      const pctMatch = (r.desc || r.title)?.match(/(\d+)%/)
+      const pct = pctMatch ? parseFloat(pctMatch[1]) / 100 : 0.5
+      const offer = +(d.amount * pct).toFixed(2)
+      return {
+        action: 'OFFER',
+        amount: offer,
+        ruleId: r.id,
+        ruleTitle: r.title,
+        why: `Matched rule "${r.title}": Offering ${Math.round(pct * 100)}% partial refund ($${offer}).`
+      }
+    }
+  }
+
+  // 3. Check active Auto-Fight rules
+  const autoFightRules = activeRules.filter(r => r.kind === 'auto-fight' || r.tag === 'Auto-Fight')
+  for (const r of autoFightRules) {
+    if (d.facts.delivered || s >= 70) {
+      return {
+        action: 'FIGHT',
+        amount: 0,
+        ruleId: r.id,
+        ruleTitle: r.title,
+        why: `Matched rule "${r.title}": Verified carrier delivery proof available.`
+      }
+    }
+  }
+
+  // 4. Fallback: Carrier delivery confirmed -> FIGHT
+  if (s >= store.rules.minStrength || d.facts.delivered) {
+    return {
+      action: 'FIGHT',
+      amount: 0,
+      why: d.facts.delivered
+        ? "Carrier tracking confirms delivery to buyer's PayPal address. Verified evidence package ready to fight."
+        : `Evidence strength is ${s}/100, above your ${store.rules.minStrength} threshold. Every claim is backed by a source record.`
+    }
+  }
+
+  // 5. Fallback: SNAD / Quality issue with high return cost -> OFFER
   if (d.type === 'MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED' || d.type === 'QUALITY_ISSUE') {
     const offer = +(d.amount * 0.2).toFixed(2)
     if (d.returnCost >= offer) {
-      return { action: 'OFFER', amount: offer, why: `A 20% partial refund ($${offer}) is cheaper than the $${d.returnCost} return and restocking cost, and can close the case now.` }
+      return {
+        action: 'OFFER',
+        amount: offer,
+        why: `A 20% partial refund ($${offer}) is cheaper than the $${d.returnCost} return and restocking cost.`
+      }
     }
   }
-  if (s >= r.minStrength) {
-    const whyText = d.id === 'PPD-00124' || d.facts.delivered
-      ? "The tracking shows the item was delivered to the buyer's address. We have confirmed fulfillment on Apr 24, 2025."
-      : `Evidence strength is ${s}/100, above your ${r.minStrength} threshold. Every claim is backed by a source record.`
-    return { action: 'FIGHT', why: whyText }
-  }
-  return { action: 'REVIEW', why: `Evidence strength is ${s}/100, below your ${r.minStrength} threshold. A person should decide.` }
+
+  return { action: 'REVIEW', amount: 0, why: `Evidence strength is ${s}/100, below auto-resolution threshold. A person should decide.` }
 }
 
 export function policy(d: Dispute, rec: any) {
-  const r = store.rules, cost = rec.action === 'ACCEPT' || rec.action === 'OFFER' ? rec.amount : 0
-  if (rec.action === 'REVIEW') return { needsApproval: true, reason: 'Needs a human decision.' }
-  if (d.amount > r.requireApprovalOver) return { needsApproval: true, reason: `Over your $${r.requireApprovalOver} approval threshold.` }
-  if (store.spent + cost > r.monthlyCap) return { needsApproval: true, reason: `Would exceed your $${r.monthlyCap} monthly refund cap.` }
-  if (rec.action === 'FIGHT') return { needsApproval: true, reason: 'Evidence submissions are always reviewed.' }
+  if (store.rulesActive === false) {
+    return { needsApproval: true, reason: 'Automation rules disabled.' }
+  }
+  if (rec.action === 'REVIEW') {
+    return { needsApproval: true, reason: 'Needs a human decision.' }
+  }
+
+  // Check approval rules
+  const activeRules = (store.rulesList || []).filter(r => r.on !== false)
+  const approvalRules = activeRules.filter(r => r.kind === 'approval' || r.tag === 'Require Approval')
+  for (const ar of approvalRules) {
+    const m = ar.title?.match(/(?:>|over|\$)\s*(\d+(?:\.\d+)?)/i)
+    const thresh = m ? parseFloat(m[1]) : (ar.value ?? store.rules.requireApprovalOver ?? 100)
+    if (d.amount > thresh) {
+      return { needsApproval: true, reason: `Over $${thresh} approval threshold (Rule: "${ar.title}").` }
+    }
+  }
+
+  const cost = rec.action === 'ACCEPT' || rec.action === 'OFFER' ? (rec.amount || 0) : 0
+  if (store.spent + cost > store.rules.monthlyCap) {
+    return { needsApproval: true, reason: `Would exceed your $${store.rules.monthlyCap} monthly refund cap.` }
+  }
+
+  // If matched an active rule allowing automation
+  if (rec.ruleId) {
+    const matched = activeRules.find(r => r.id === rec.ruleId)
+    if (matched) {
+      return { needsApproval: false, reason: `Automated under rule: "${matched.title}"` }
+    }
+  }
+
+  if (rec.action === 'FIGHT') {
+    return { needsApproval: true, reason: 'Evidence submissions are reviewed before sending to PayPal.' }
+  }
+
   return { needsApproval: false, reason: 'Within your automation rules.' }
 }
 
